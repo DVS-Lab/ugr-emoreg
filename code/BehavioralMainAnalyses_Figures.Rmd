@@ -1,12 +1,15 @@
 ---
 title: "Other-Directed Emotion Regulation and Sensitivity to Fairness"
 output:
+  pdf_document:
+    toc: true
+    toc_depth: '2'
   html_document:
     code_folding: show
     toc: true
     toc_float: true
     toc_depth: 2
-    css: !expr here::here("/Users/tur61139/Library/CloudStorage/OneDrive-TempleUniversity/NLP_2026/Kos_RData/StylesTemplates/mk_pro.css")
+    css: "here::here(\"/Users/tur61139/Library/CloudStorage/OneDrive-TempleUniversity/NLP_2026/Kos_RData/StylesTemplates/mk_pro.css\")"
 ---
 
 ```{r setup, include=F}
