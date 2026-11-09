@@ -34,10 +34,10 @@ run_response <- full_df |>
   group_by(sub_id, run) |> 
   summarise(n_responded = n_distinct(nTrial), .groups = "drop") |>
   mutate(prop_missed = 1 - n_responded/48)
-excluded_runs <- run_response |> filter(prop_missed > .25) 
+excluded_runs <- run_response |> filter(prop_missed >= 0.25) 
 excluded_runs # expect 10954 run 1, 11316 run 2
 
-full_df <- semi_join(full_df, filter(run_response, prop_missed <= .25), by = c("sub_id", "run"))
+full_df <- semi_join(full_df, filter(run_response, prop_missed < 0.25), by = c("sub_id", "run"))
 
 # Trial-level behavioral accept/reject variables 
 full_df <- full_df |>
@@ -577,17 +577,18 @@ summary(lm(diff_slope ~ ext_wor_c + sub_age_MC + gender_female + gender_male, df
 summary(lm(diff_slope ~ int_bet_c + sub_age_MC + gender_female + gender_male, df))
 summary(lm(diff_slope ~ int_wor_c + sub_age_MC + gender_female + gender_male, df))
 
+# Sensitivity to fairness adjusted for age, gender (add mean back to keep original scale)
 df_long <- df |>
-  select(slope_all, ext_bet, ext_wor, int_bet, int_wor) |>
-  pivot_longer(-slope_all, names_to = "EROS_scale", values_to = "score")
+  mutate(slope_adj = residuals(lm(slope_all ~ sub_age_MC + gender_female + gender_male)) + mean(slope_all)) |>
+  select(slope_adj, ext_bet, ext_wor, int_bet, int_wor) |>
+  pivot_longer(-slope_adj, names_to = "EROS_scale", values_to = "score")
 
 df_long$EROS_scale <- factor(df_long$EROS_scale,
   levels = c("ext_bet", "ext_wor", "int_bet", "int_wor"),
   labels = c("Other-Directed Emotion Improving", "Other-Directed Emotion Worsening", "Self-Directed Emotion Improving", "Self-Directed Emotion Worsening"))
 
-# Supp Figure 2: Subject-specific sensitivity to fairness  EROS
-# Lines are simple fits; stats above are from the models controlling for age and gender
-p_supp_fairness_slope_eros <- ggplot(df_long, aes(x = score, y = slope_all)) +
+# Supp Figure 2: Subject-specific sensitivity to fairness × EROS (adjusted for age and gender)
+p_supp_fairness_slope_eros <- ggplot(df_long, aes(x = score, y = slope_adj)) +
   geom_smooth(aes(color = EROS_scale, fill = EROS_scale),
     method = "lm",
     se = T,
@@ -600,7 +601,7 @@ p_supp_fairness_slope_eros <- ggplot(df_long, aes(x = score, y = slope_all)) +
   guides(color = "none", fill = "none") +
   labs(
     x = "EROS Subscale Score",
-    y = "Sensitivity to Fairness") +
+    y = "Sensitivity to Fairness\n(adjusted for age and gender)") +
   theme_minimal(base_size = 18)
 p_supp_fairness_slope_eros
 ```
