@@ -1,0 +1,967 @@
+---
+title: "Other-Directed Emotion Regulation and Sensitivity to Fairness"
+output:
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    css: "here::here(\"/Users/tur61139/Library/CloudStorage/OneDrive-TempleUniversity/NLP_2026/Kos_RData/StylesTemplates/mk_pro.css\")"
+  pdf_document:
+    toc: true
+    toc_depth: '2'
+---
+
+```{r setup, include=F}
+# Load libs
+library(xfun)
+pkg_attach("tidyverse", "Hmisc", "psych", "tibble", "dplyr", "tidyr", "ggplot2", "ggeffects", "sjPlot", "lme4", "car", "emmeans", "scales", "purrr","GGally", "stargazer", "broom", "lmtest", "sandwich", "ggpubr", "performance", "broom.mixed", "gt", "lmerTest", "DataCombine", "MuMIn", "gtsummary", "ggrepel", "corrplot", "writexl", "forcats", "RColorBrewer", "lubridate", "colorBlindness", "interactions", install = TRUE)
+options(scipen=999)
+options(digits=2)
+```
+
+# Loading data
+Loading in the .csv files with participant demographic, behavioral (e.g., EROS scores), and neuroimaging data (e.g., extracted cluster values). If you are interested in the data, please email. 
+```{r}
+# Load .csvs with subject data 
+full_df <- read_csv("/Users/tur61139/Documents/GitHub/rf1-kos/df_MRdata_n138.csv")
+df <- read_csv("/Users/tur61139/Documents/GitHub/rf1-kos/df_MRcovar_n138.csv")
+neural_df <- read_csv("/Users/tur61139/Documents/GitHub/rf1-norms-hpc/n138_filterfunc.csv")
+df_extracted <- read_csv("/Users/tur61139/Documents/GitHub/rf1-norms/derivatives/imaging_plots/compiled_clusters_n138.csv")
+full_df <- left_join(full_df, df, by = "sub_id")
+full_df <- full_df |>
+  rename(avg_ext_bet = avg_ext_bet.x,
+         avg_ext_wor = avg_ext_wor.x,
+         avg_int_bet = avg_int_bet.x,
+         avg_int_wor = avg_int_wor.x,
+         reldep = reldep.x,
+         gender_female = gender_female.x,
+         gender_male = gender_male.x)
+
+# Trial-level behavioral accept/reject variables 
+full_df <- full_df |>
+  mutate(offer = R_Option + L_Option, 
+         beh_fairness = offer / Endowment,
+         accept = ifelse(accept_reject == "Accept", 1, 0),
+         
+         # Percentage label for plotting
+         beh_fairness_perc = case_when(beh_fairness >= 0.060 & beh_fairness <= 0.0625 ~ "5%",
+                                       beh_fairness >= 0.09375 & beh_fairness <= 0.125 ~ "10%",
+                                       abs(beh_fairness - 0.25) < 1e-6 ~ "25%",
+                                       abs(beh_fairness - 0.50) < 1e-6 ~ "50%",
+                                       TRUE ~ NA_character_),
+         # Numeric binned version for modeling (since )
+         beh_fairness_num = case_when(beh_fairness_perc == "5%" ~ 0.05,
+                                      beh_fairness_perc == "10%" ~ 0.10,
+                                      beh_fairness_perc == "25%" ~ 0.25,
+                                      beh_fairness_perc == "50%" ~ 0.50,
+                                      TRUE ~ NA_real_),
+         # Factor version for plotting
+         beh_fairness_perc = factor(beh_fairness_perc, levels = c("5%", "10%", "25%", "50%")))
+
+```
+
+# Sensitivity to fairness calculation
+Calculating the 4 different slopes for sensitivities to fairness based on the behavioral data: all-trial, social trials only, nonsocial trials only, then the difference scored social - nonsocial. 
+```{r}
+## Sensitivity to fairness
+# Function to extract subject-level fairness slope
+get_fairness_slope <- function(df, label) {
+  # Fixed effect of behavioral fairness, random effect with subject
+  model <- glmer(accept ~ beh_fairness + (1 + beh_fairness | sub_id), data = df, family = binomial,
+    control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+  fe <- fixef(model)[["beh_fairness"]]
+  re <- ranef(model)$sub_id[, "beh_fairness"]
+  subjIDs <- as.numeric(rownames(ranef(model)$sub_id))
+  slopes <- fe + re
+
+  tibble(sub_id = subjIDs, !!label := slopes)
+}
+
+# Estimate fairness slopes across all trials, social trials, and nonsocial trials
+slope_all_df <- get_fairness_slope(full_df, "slope_all")
+slope_social_df <- get_fairness_slope(filter(full_df, condition == "social"), "slope_social")
+slope_nonsocial_df <- get_fairness_slope(filter(full_df, condition == "nonsocial"), "slope_nonsocial")
+
+# Merge slopes into one df and compute social - nonsocial difference score
+slope_df_wide <- reduce(list(slope_all_df, slope_social_df, slope_nonsocial_df), full_join, by = "sub_id") |>
+  mutate(diff_slope = slope_social - slope_nonsocial)
+# Printing first 15 subs
+print(head(slope_df_wide, 15), digits=3)
+
+# Add slope variables back into the trial-level dataframe
+full_df <- left_join(full_df, slope_df_wide, by = "sub_id")
+```
+
+# Dataframe for analyses...
+```{r}
+# Change the names so that it's more legible for figures
+pretty_names <- c(gender_female = "Female", gender_male = "Male", sub_age = "Age", sub_gender = "Gender",
+                  usi_total = "USI Score", ADI_NATRANK = "ADI (National Rank)", reldep = "Relative Deprivation (z)", 
+                  avg_ext_bet.x = "Extrinsic Improving",
+                  avg_ext_wor.x = "Extrinsic Worsening",
+                  avg_int_bet.x = "Intrinsic Improving",
+                  avg_int_wor.x = "Intrinsic Worsening",
+                  slope_all = "Sensitivity to Fairness",
+                  diff_slope = "Sensitivity to Fairness, S-NS",
+                  slope_social = "Social Sensitivity to Fairness",
+                  slope_nonsocial = "Nonsocial Sensitivity to Fairness")
+
+# Subject-level covariates pulled from full_df
+subject_vars <- full_df |>
+  select(sub_id, starts_with("avg_"), ends_with("_MC")) |>
+  distinct()
+
+# Add subject-level covariates to df used for downstream analyses
+df <- left_join(df, subject_vars, by = "sub_id")
+
+# Long-format slope dataframe for social vs. nonsocial plots
+slope_df <- slope_df_wide |>
+  left_join(full_df |>
+              select(sub_id, avg_ext_bet, avg_ext_wor, avg_int_bet, avg_int_wor, reldep) |>
+              distinct(), by = "sub_id") |>
+  pivot_longer(cols = c(slope_social, slope_nonsocial), names_to = "condition", values_to = "slope") |>
+  mutate(condition = ifelse(condition == "slope_social", "social", "nonsocial"))
+
+# Subject-level acceptance rates within each condition
+accept_rates <- full_df |>
+  group_by(sub_id, condition) |>
+  summarise(accept_rate = mean(accept, na.rm = TRUE), .groups = "drop") |>
+  left_join(full_df |>
+              select(sub_id, avg_ext_bet, avg_ext_wor, avg_int_bet, avg_int_wor, reldep) |>
+              distinct(), by = "sub_id")
+
+# Final df for modeling
+df <- left_join(df_extracted, df, by = "sub_id")
+
+# Create df with subject demographic and questionnaire information from long-format trial df
+demog_df <- full_df |>
+  group_by(sub_id) |>
+  slice(1) |>
+  ungroup() |>
+  select(sub_id, gender_female ,gender_male, sub_age, race, ethnicity, sub_gender,
+         usi_total, ADI_NATRANK, reldep, # USI and ADI and relative deprivation 
+         avg_ext_bet, avg_ext_wor, avg_int_bet, avg_int_wor, # EROS scores
+         slope_all, diff_slope, slope_social, slope_nonsocial)
+```
+
+
+```{r}
+summary(glmer(accept ~ beh_fairness_num * avg_ext_bet + (1 + beh_fairness_num | sub_id), data = full_df, family = binomial))
+
+summary(glmer(accept ~ beh_fairness_num * avg_ext_wor + (1 + beh_fairness_num | sub_id), data = full_df, family = binomial))
+
+summary(glmer(accept ~ beh_fairness_num * avg_int_bet + (1 + beh_fairness_num | sub_id), data = full_df, family = binomial))
+
+summary(glmer(accept ~ beh_fairness_num * avg_int_wor + (1 + beh_fairness_num | sub_id), data = full_df, family = binomial))
+
+```
+
+# Behavioral Analyses
+## Acceptance Rate
+Looking at the acceptance rate for offers across the 4 levels of fairness. In particular, want to see if there is a significant difference in 1) fairness on offer acceptance and 2) fairness and social context (human vs. computer partner) on offer acceptance.
+```{r, fig.height=5, fig.width=8}
+fairness <- glmer(accept ~ beh_fairness_perc + (1 | sub_id), data = full_df, family = binomial)
+summary(fairness)
+car::Anova(fairness, type = 3)
+
+fairness_condition <- glmer(accept ~ beh_fairness_perc * condition + (1 | sub_id), data = full_df, family = binomial)
+summary(fairness_condition)
+car::Anova(fairness_condition, type = 3)
+
+
+# Summarise with SE and put "social" first
+plot_df <- full_df |>
+  group_by(beh_fairness_perc, condition) |>
+  summarise(n = dplyr::n(),
+            accept_rate = mean(accept_binary, na.rm = TRUE),
+            sd_accept = sd(accept_binary, na.rm = TRUE),
+            se_accept = sd_accept / sqrt(n), .groups = "drop") |>
+  mutate(condition = factor(condition, levels = c("social", "nonsocial")),
+         ymin = pmax(0, accept_rate - se_accept),
+         ymax = pmin(1, accept_rate + se_accept))
+
+pd <- position_dodge(width = 0.8)  # shared dodge object
+
+ggplot(plot_df, aes(x = beh_fairness_perc, y = accept_rate, fill = condition)) +
+  geom_hline(yintercept = c(0.25, 0.50, 0.75, 1.00),
+           linetype = "solid",
+           color = "lightgray",
+           linewidth = 0.6) +
+  geom_col(width = 0.7, color = "white", position = pd) +
+  geom_errorbar(aes(ymin = ymin, ymax = ymax), width = 0.15, position = pd, linewidth = 0.5) +
+  scale_y_continuous(name = "Acceptance Rate", 
+                     breaks = c(0, 0.25, 0.50, 0.75, 1.00),
+                     labels = scales::label_percent(accuracy = 1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  scale_x_discrete(name = "Offer Fairness (% of endowment)") +
+  scale_fill_manual(values = c("social" = "#FBB03B", "nonsocial" = "#50C9F1"), breaks = c("social", "nonsocial")) +
+  theme_minimal(base_size = 24) +
+  theme(panel.grid = element_blank(), axis.title = element_text(size = 15), axis.text = element_text(size = 12), legend.title = element_blank()) 
+
+
+
+```
+Significant for offer fairness, but not the interaction term. 
+
+## Response time and offer fairness
+Checking whether response time is strongly correlated with offer fairness, since shared variance with the RT regressor could underestimate the parametric fairness effect.
+```{r}
+options(digits = 5)
+# Correlation of fairness and response time
+log_dir <- "/Users/tur61139/Documents/GitHub/rf1-sra/stimuli/Scan-Lets_Make_A_Deal/logs"
+
+rt_logs <- list.files(log_dir, pattern = "task-ultimatum.*raw\\.csv$",
+                      full.names = TRUE, recursive = TRUE) |>
+  set_names() |>
+  map_dfr(~read_csv(.x, show_col_types = FALSE, col_types = cols(.default = "c")),
+          .id = "file") |>
+  filter(!str_detect(basename(file), "ses-02"),
+         str_extract(basename(file), "(?<=sub-)\\d+") == basename(dirname(file))) |>
+  mutate(sub_id  = as.numeric(str_extract(basename(file), "(?<=sub-)\\d+")),
+         run     = as.numeric(str_extract(basename(file), "(?<=run-)\\d+")) + 1,
+         nTrial  = as.numeric(nTrial),
+         cue_log = as.numeric(cue_Onset),
+         rt_num  = suppressWarnings(as.numeric(rt))) |>
+  select(sub_id, run, nTrial, resp, rt, rt_num, cue_log)
+
+rt_df <- full_df |>
+  select(sub_id, run, nTrial, cue_Onset, beh_fairness_num, beh_fairness_perc,
+         accept, condition) |>
+  left_join(rt_logs, by = c("sub_id", "run", "nTrial"))
+
+nrow(rt_df)                                    # want 12,494
+summary(abs(rt_df$cue_Onset - rt_df$cue_log))  # want max near 0
+
+rt_clean <- rt_df |>
+  filter(!resp %in% c("--", "999.0"), !is.na(rt_num), rt_num > 0)
+nrow(rt_clean)
+summary(rt_clean$rt_num)   # sanity: should sit under the 3.25s decision window
+
+# (a) Within-subject correlations, Fisher-z averaged
+ws_r <- rt_clean |>
+  group_by(sub_id) |>
+  filter(n_distinct(beh_fairness_num) > 1, n() > 10) |>
+  summarise(r = cor(beh_fairness_num, rt_num), .groups = "drop") |>
+  mutate(z = atanh(pmin(pmax(r, -.999), .999)))
+ws_r |> summarise(n = n(), mean_r = tanh(mean(z)), sd_r = sd(r),
+                  min_r = min(r), max_r = max(r),
+                  t = mean(z)/(sd(z)/sqrt(n())),
+                  p = 2*pt(-abs(t), n()-1))
+
+# (b) Monotonic in fairness, or slowest at intermediate offers?
+rt_clean |>
+  group_by(beh_fairness_perc) |>
+  summarise(M = mean(rt_num), SD = sd(rt_num), n = n())
+
+# (c) Mixed model, for a fixed-effect estimate
+summary(lmer(rt_num ~ beh_fairness_num + (1 + beh_fairness_num | sub_id),
+             data = rt_clean))
+
+m_lin <- lmer(rt_num ~ beh_fairness_num + (1 + beh_fairness_num | sub_id), data = rt_clean)
+print(coef(summary(m_lin))["beh_fairness_num", ], digits = 8)
+
+# Tukey
+emmeans(lmer(rt_num ~ beh_fairness_perc + (1 | sub_id), data = rt_clean),
+        pairwise ~ beh_fairness_perc)
+```
+
+## Anterior Insula Categorical Plot
+Using data from the categorical model in FSL (level 1 = 5% offer, and so on) to demonstrate the anterior insula tracking offer fairness regardless of a low or high endowment amount. 
+```{r fig.height=5, fig.width=8}
+# 8 conditions
+conditions <- c("/Users/tur61139/Documents/GitHub/rf1-norms/derivatives/imaging_plots/thr_seed-AIns.nii.gz_model-3b_type-act_cope-01_cname-nonsocial_level1",
+  "/Users/tur61139/Documents/GitHub/rf1-norms/derivatives/imaging_plots/thr_seed-AIns.nii.gz_model-3b_type-act_cope-02_cname-nonsocial_level2",
+  "/Users/tur61139/Documents/GitHub/rf1-norms/derivatives/imaging_plots/thr_seed-AIns.nii.gz_model-3b_type-act_cope-03_cname-nonsocial_level3",
+  "/Users/tur61139/Documents/GitHub/rf1-norms/derivatives/imaging_plots/thr_seed-AIns.nii.gz_model-3b_type-act_cope-04_cname-nonsocial_level4",
+  "/Users/tur61139/Documents/GitHub/rf1-norms/derivatives/imaging_plots/thr_seed-AIns.nii.gz_model-3b_type-act_cope-05_cname-social_level1",
+  "/Users/tur61139/Documents/GitHub/rf1-norms/derivatives/imaging_plots/thr_seed-AIns.nii.gz_model-3b_type-act_cope-06_cname-social_level2",
+  "/Users/tur61139/Documents/GitHub/rf1-norms/derivatives/imaging_plots/thr_seed-AIns.nii.gz_model-3b_type-act_cope-07_cname-social_level3",
+  "/Users/tur61139/Documents/GitHub/rf1-norms/derivatives/imaging_plots/thr_seed-AIns.nii.gz_model-3b_type-act_cope-08_cname-social_level4")
+
+# Weighted means and SEM function thx chat
+summarise_condition <- function(cond) {
+  val_file <- paste0(cond, ".txt")
+  var_file <- file.path(dirname(cond), paste0("var_", basename(cond), ".txt"))
+  vals <- scan(val_file, what = numeric(), quiet = TRUE)
+  vars <- scan(var_file, what = numeric(), quiet = TRUE)
+  if (length(vals) != length(vars)) stop("Lengths differ for ", cond)
+  w <- 1 / vars
+  tibble(
+    condition = basename(cond),
+    mean = sum(w * vals) / sum(w),
+    sem  = sqrt(1 / sum(w)),
+    n    = length(vals))
+}
+
+# Weighted means and SEMs
+summary_df <- map_dfr(conditions, summarise_condition)
+
+# Parse social and level
+cat_plot_df <- summary_df |>
+  mutate(social = if_else(str_detect(condition, "nonsocial"), "Nonsocial", "Social"),
+    level_digit = str_match(condition, "level(\\d)")[,2],
+    level = factor(level_digit, 
+                   levels = c("1","2","3","4"),
+                   labels = c("5%","10%","25%","50%")),
+    cope_num = as.integer(str_match(condition, "cope-(\\d+)")[,2]))
+
+# Plot
+ggplot(cat_plot_df, aes(x = level, y = mean, fill = social)) +
+  geom_hline(yintercept = c(-15, -10, -5, 0, 5),
+           linetype = "solid",
+           color = "lightgray",
+           linewidth = 0.6) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(aes(ymin = mean - sem, 
+                    ymax = mean + sem),
+                position = position_dodge(width = 0.8), width = 0.2, linewidth=0.6) +
+  scale_fill_manual(values = c("Social" = "#FBB03B", "Nonsocial" = "#50C9F1")) +
+  labs(x = "Offer Level (% of endowment)",
+       y = "AIns activation (inverse-variance weighted mean)",
+       title = "Anterior Insula – Social vs Nonsocial") +
+  theme_classic(base_size = 13)
+
+# Subject level df for stats
+cat_stats_df <- map_dfr(conditions, function(cond) {
+  val_file <- paste0(cond, ".txt")
+  vals <- scan(val_file, what = numeric(), quiet = TRUE)
+  tibble(sub = factor(seq_along(vals)), condition = basename(cond), value = vals)}) |>
+  mutate(social = if_else(str_detect(condition, "nonsocial"), "Nonsocial", "Social"),
+         level_digit = str_match(condition, "level(\\d)")[, 2],
+         level = factor(level_digit, levels = c("1", "2", "3", "4"),
+                        labels = c("5%", "10%", "25%", "50%")))
+
+# Mixed model for fairness level, sociality, and interaction
+m_cat <- lmer(value ~ social * level + (1 | sub), data = cat_stats_df)
+anova(m_cat)
+summary(m_cat)
+
+```
+
+# Activation
+## dlPFC, S > NS behavioral sensitivity, Extrinsic Affect Improving (Other-Directed Affect Improving)
+```{r fig.height=8, fig.width=10}
+# Create High/Low grouping by median split
+df$ext_bet_group <- ifelse(subject_vars$avg_ext_bet_MC.x >= median(subject_vars$avg_ext_bet_MC.x, na.rm = TRUE),
+                           "High", "Low")
+
+# Get the full 12-color color-blind friendly palette
+cb_palette <- SteppedSequential5Steps
+
+# Choose colors
+cb_pair <- cb_palette[c(3, 11)]
+names(cb_pair) <- c("Low", "High")
+
+
+# Regression scatterplot with colorblind-safe palette and residualized X and Y
+p_dlPFC_extbet <- ggplot(df, aes(
+  x = diff_slope,
+  y = residuals(lm(`act_AlphaDiff-ExtBet-Int_C12_zstat3_cluster1` ~ sub_age_MC + gender_female + gender_male + avg_fdmean_MC + avg_tsnr_MC)),
+  color = ext_bet_group,
+  fill = ext_bet_group)) +
+  geom_point(alpha = 0.5, size = 3) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2) +
+  scale_color_manual(values = cb_pair) +
+  scale_fill_manual(values = cb_pair) +
+  labs(
+    x = "Behavioral Sensitivity to Fairness, \nSocial > Nonsocial (MC)",
+    y = "Neural Sensitivity to Fairness, \nSocial > Nonsocial (Residualized)",
+    color = "Extrinsic Affect-Improving",
+    fill = "Extrinsic Affect-Improving") +
+  theme_minimal(base_size = 18) + 
+  theme(legend.position="bottom")
+p_dlPFC_extbet
+
+
+# Johnson-Neyman plot version
+m_jn <- lm(`act_AlphaDiff-ExtBet-Int_C12_zstat3_cluster1` ~ diff_slope * avg_ext_bet.x +  sub_age_MC + gender_female + gender_male + avg_fdmean_MC + avg_tsnr_MC,
+  data = df)
+
+# Obs range of moderator
+mf <- model.frame(m_jn)
+mod_rng <- range(mf$avg_ext_bet.x, na.rm = TRUE)
+
+# Johnson–Neyman analysis
+jn <- johnson_neyman(m_jn,
+  pred = "diff_slope",
+  modx = "avg_ext_bet.x",
+  alpha = 0.05,
+  mod.range = mod_rng, 
+  sig.color = cb_palette[11],
+  insig.color = "gray",
+  line.thickness = 1,
+  y.label = "Slope of Sensitivity to Fairness, Social > Nonsocial",
+  modx.label = "Extrinsic Affect-Improving", 
+  title = "Activation, dlPFC, Extrinsic Affect-Improving")
+jn
+```
+
+# PPI 
+## Amygdala, S > NS behavioral sensitivity
+```{r fig.height=8, fig.width=10}
+diff_amyg <- lm(`amyg_AlphaDiff_C12` ~ sub_age_MC + gender_female + gender_male + avg_fdmean_MC + avg_tsnr_MC, data = df)
+# NO BEHAV COVAR OF INTEREST
+summary(diff_amyg)
+
+diff_beh <- lm(diff_slope ~ sub_age_MC + gender_female + gender_male + avg_fdmean_MC + avg_tsnr_MC, data = df)
+# BEHAV COVAR OF INTEREST AS DV 
+summary(diff_beh)
+
+ggplot(df, aes(x = diff_slope, y = `amyg_AlphaDiff_C12`)) +
+  geom_smooth(method = "lm", formula = y ~ x,
+    se = TRUE, color = "#85CAC7", fill = "#85CAC7", size = 2, alpha = 0.25) +
+    geom_point(color = "black", size = 1.5, alpha = 0.8) +
+  labs(x = "Behavioral Sensitivity to Fairness",
+       y = "Neural Sensitivity to Fairness, S > NS\namygdala–OFC connectivity") +
+  theme_minimal() + 
+  theme(legend.position="top")
+
+```
+
+## Amygdala-dmPFC, S > NS behavioral sensitivity, Extrinsic Worsening (Other-Directed Affect Worsening)
+```{r fig.height=8, fig.width=10}
+# amygdala
+model_amyg <- lm(`amyg_AlphaDiffExtWor_C12` ~ sub_age_MC + gender_female + gender_male + avg_fdmean_MC + avg_tsnr_MC + diff_slope + avg_ext_wor.x + (diff_slope*avg_ext_wor.x), data=df)
+summary(model_amyg)
+
+# Create High/Low grouping by median split
+df$extwor_group <- ifelse(df$avg_ext_wor.x >= median(df$avg_ext_wor.x, na.rm = TRUE), "High", "Low")
+
+cbextwor_pair <- SteppedSequential5Steps[c(2, 9)]
+names(cbextwor_pair) <- c("High", "Low")
+
+# Regression scatterplot with colorblind-safe palette and residualized Y axis 
+p_amygdala_extwor <- ggplot(df, aes(
+  x = diff_slope,
+  y = residuals(lm(`amyg_AlphaDiffExtWor_C12` ~ sub_age_MC + gender_female + gender_male + avg_fdmean_MC + avg_tsnr_MC)),
+  color = extwor_group,
+  fill = extwor_group)) + 
+  geom_point(alpha = 0.5, size = 3) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2) +
+  scale_color_manual(values = cbextwor_pair) +
+  scale_fill_manual(values = cbextwor_pair) +
+  labs(
+    x = "Behavioral Sensitivity to Fairness, \nSocial > Nonsocial",
+    y = "Neural Sensitivity to Fairness, \nSocial > Nonsocial (Residualized)",
+    color = "Extrinsic Affect-Worsening") +
+  theme_minimal(base_size = 18) +
+  guides(fill = "none", shape = "none") + 
+  theme(legend.position="bottom")
+
+p_amygdala_extwor
+
+
+# Johnson-Neyman plot version
+m_jn <- lm(`amyg_AlphaDiffExtWor_C12` ~ diff_slope * avg_ext_wor.x +  sub_age_MC + gender_female + gender_male + avg_fdmean_MC+ avg_tsnr_MC, data = df)
+
+# Obs range of moderator
+mf <- model.frame(m_jn)
+mod_rng <- range(mf$avg_ext_wor.x, na.rm = TRUE)
+
+# Johnson–Neyman analysis
+jn <- johnson_neyman(m_jn,
+  pred = "diff_slope",
+  modx = "avg_ext_wor.x",
+  alpha = 0.05,
+  mod.range = mod_rng, 
+  sig.color = cb_palette[1], 
+  insig.color = "gray",
+  line.thickness = 1,
+  y.label = "Slope of Sensitivity to Fairness, Social > Nonsocial",
+  modx.label = "Extrinsic Affect-Worsening", 
+  title = "PPI, amygdala - vmPFC/OFC , Extrinsic Affect-Worsening")
+jn
+
+
+```
+
+# Behavioral Plots (supplement)
+## Overall fairness (based on task)
+```{r fig.height=8, fig.width=10}
+# Model with condition
+glmer(accept ~ beh_fairness_num * condition + (1 | sub_id), family = binomial, full_df)
+summary(glmer(accept ~ beh_fairness_num * condition + (1 | sub_id), family = binomial, full_df))
+
+# Model without condition
+glmer(accept ~ beh_fairness_num + (1 | sub_id), family = binomial, full_df)
+summary(glmer(accept ~ beh_fairness_num  + (1 | sub_id), family = binomial, full_df))
+
+# Supp. Figure 1: offer fairness (task-defined, 5, 10, 25, 50% of offer)
+plot_df_fairness <- full_df |>
+  group_by(beh_fairness_perc) |>
+  summarise(n = dplyr::n(),
+    accept_rate = mean(accept_binary, na.rm = TRUE),
+    sd_accept = sd(accept_binary, na.rm = TRUE),
+    se_accept = sd_accept / sqrt(n),
+    .groups = "drop") |>
+  mutate(ymin = pmax(0, accept_rate - se_accept),
+    ymax = pmin(1, accept_rate + se_accept))
+
+p_supp_fairness <- ggplot(plot_df_fairness, aes(x = beh_fairness_perc, y = accept_rate)) +
+  geom_hline(yintercept = c(0.25, 0.50, 0.75, 1.00),
+    linetype = "solid",
+    color = "lightgray",
+    linewidth = 0.6) +
+  geom_col(width = 0.7, fill = "springgreen4", color = "white") +
+  geom_errorbar(aes(ymin = ymin, ymax = ymax), width = 0.15, linewidth = 0.5) +
+  scale_y_continuous(
+    name = "Acceptance Rate",
+    breaks = c(0, 0.25, 0.50, 0.75, 1.00),
+    labels = scales::label_percent(accuracy = 1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  scale_x_discrete(name = "Offer Fairness (% of endowment)") +
+  theme_minimal(base_size = 24) +
+  theme(
+    panel.grid = element_blank(),
+    axis.title = element_text(size = 15),
+    axis.text = element_text(size = 12),
+    legend.position = "none")
+
+p_supp_fairness
+
+# Center fairness, EROS 
+full_df$fair_z    <- scale(full_df$beh_fairness)[,1]
+full_df$ext_wor_c <- scale(full_df$avg_ext_wor, scale = FALSE)[,1]
+full_df$ext_bet_c <- scale(full_df$avg_ext_bet, scale = FALSE)[,1]
+full_df$int_wor_c <- scale(full_df$avg_int_wor, scale = FALSE)[,1]
+full_df$int_bet_c <- scale(full_df$avg_int_bet, scale = FALSE)[,1]
+
+# EROS moderation of fairness x offer acceptance relationship
+fair_extwor <- glmer(accept ~ fair_z * ext_wor_c + (1 + fair_z | sub_id), family = binomial, data = full_df, 
+                     control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5)))
+fair_extwor
+fair_extbet <- glmer(accept ~ fair_z * ext_bet_c + (1 + fair_z | sub_id), family = binomial, data = full_df,
+                     control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5)))
+fair_extbet
+fair_intwor <- glmer(accept ~ fair_z * int_wor_c + (1 + fair_z | sub_id), family = binomial, data = full_df,
+                     control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5)))
+fair_intwor
+fair_intbet <- glmer(accept ~ fair_z * int_bet_c + (1 + fair_z | sub_id), family = binomial, data = full_df,
+                     control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5)))
+fair_intbet
+
+# Supp Figure 2: EROS moderation coefficient plot...
+eros_models <- list(
+  "Extrinsic Improving" = fair_extbet,
+  "Extrinsic Worsening" = fair_extwor,
+  "Intrinsic Improving" = fair_intbet,
+  "Intrinsic Worsening" = fair_intwor
+)
+fig2_df <- purrr::imap_dfr(eros_models, \(model, scale_name) {
+  broom.mixed::tidy(model, effects = "fixed", conf.int = TRUE) |>
+    dplyr::filter(stringr::str_detect(term, "fair_z:")) |>
+    dplyr::mutate(EROS_scale = scale_name)
+}) |>
+  dplyr::mutate(
+    EROS_scale = factor(EROS_scale,
+      levels = c("Extrinsic Affect-Improving", "Extrinsic Affect-Worsening",
+        "Intrinsic Affect-Improving", "Intrinsic Affect-Worsening")))
+
+eros_cols <- c("Extrinsic Affect-Improving" = "green3",
+               "Extrinsic Affect-Worsening" = "red2",
+               "Intrinsic Affect-Improving" = "goldenrod2",
+               "Intrinsic Affect-Worsening" = "blue2")
+
+print(fig2_df, digits = 4)
+
+p_supp_eros_coefficients <- ggplot(fig2_df, aes(x = EROS_scale, y = estimate, color = EROS_scale)) +
+  geom_hline(yintercept = 0,
+    linetype = "dashed",
+    color = "gray90",
+    linewidth = 0.7) +
+  geom_pointrange(aes(ymin = conf.low, ymax = conf.high),
+    linewidth = 0.9,
+    size = 1) +
+  coord_flip() +
+  scale_color_manual(values = eros_cols) +
+  guides(color = "none") +
+  labs(
+    x = NULL,
+    y = "Offer Fairness Interaction Estimates") +
+  theme_minimal(base_size = 18) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 16))
+
+p_supp_eros_coefficients
+
+# Mean values
+sapply(df[c("avg_ext_bet.x","avg_ext_wor.x","avg_int_bet.x","avg_int_wor.x")],
+       function(x) c(mean = mean(x, na.rm = TRUE), sd = sd(x, na.rm = TRUE)))
+
+
+```
+
+## Figure 2: EROS moderation of fairness sensitivity (trial level)
+## Figure 2: EROS moderation of fairness sensitivity (trial level)
+```{r figure-2, fig.height=8, fig.width=16}
+library(lme4)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(ggeffects)
+library(patchwork)
+
+# ---- 1. Predictors ----
+# Offer fairness: continuous proportion offered, z-scored.
+# EROS subscales: mean-centered (not rescaled), so coefficients are per scale point.
+full_df$fair_z    <- scale(full_df$beh_fairness)[, 1]
+full_df$ext_bet_c <- scale(full_df$avg_ext_bet, scale = FALSE)[, 1]
+full_df$ext_wor_c <- scale(full_df$avg_ext_wor, scale = FALSE)[, 1]
+full_df$int_bet_c <- scale(full_df$avg_int_bet, scale = FALSE)[, 1]
+full_df$int_wor_c <- scale(full_df$avg_int_wor, scale = FALSE)[, 1]
+
+fair_mean <- mean(full_df$beh_fairness, na.rm = TRUE)
+fair_sd   <- sd(full_df$beh_fairness, na.rm = TRUE)
+
+# Participant-level SDs of each subscale (one row per participant)
+sub_sd <- full_df |>
+  distinct(sub_id, avg_ext_bet, avg_ext_wor, avg_int_bet, avg_int_wor) |>
+  summarise(across(starts_with("avg_"), \(x) sd(x, na.rm = TRUE)))
+print(sub_sd, digits = 4)   # expect ~0.762, 0.491, 0.621, 0.708
+
+# ---- 2. Models ----
+ctrl <- glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5))
+
+eros_spec <- tibble::tribble(
+  ~EROS_scale,            ~centered,    ~raw,           ~label,
+  "Extrinsic Improving",  "ext_bet_c",  "avg_ext_bet",  "Other-Directed Emotion Improving",
+  "Extrinsic Worsening",  "ext_wor_c",  "avg_ext_wor",  "Other-Directed Emotion Worsening",
+  "Intrinsic Improving",  "int_bet_c",  "avg_int_bet",  "Self-Directed Emotion Improving",
+  "Intrinsic Worsening",  "int_wor_c",  "avg_int_wor",  "Self-Directed Emotion Worsening"
+)
+
+eros_models <- set_names(eros_spec$centered, eros_spec$EROS_scale) |>
+  map(\(v) glmer(as.formula(paste0("accept ~ fair_z * ", v, " + (1 + fair_z | sub_id)")),
+                 family = binomial, data = full_df, control = ctrl))
+
+fair_extbet <- eros_models[["Extrinsic Improving"]]
+fair_extwor <- eros_models[["Extrinsic Worsening"]]
+fair_intbet <- eros_models[["Intrinsic Improving"]]
+fair_intwor <- eros_models[["Intrinsic Worsening"]]
+
+# ---- 3. Interaction estimates (per point and per SD) ----
+fig2_df <- imap_dfr(eros_models, \(model, scale_name) {
+  broom.mixed::tidy(model, effects = "fixed", conf.int = TRUE) |>   # Wald 95% CIs
+    filter(stringr::str_detect(term, "fair_z:")) |>
+    mutate(EROS_scale = scale_name)
+}) |>
+  left_join(eros_spec, by = "EROS_scale") |>
+  mutate(
+    sd_subscale = map_dbl(raw, \(r) sub_sd[[r]]),
+    p_bonf  = p.adjust(p.value, method = "bonferroni"),
+    se_sd   = std.error * sd_subscale,
+    est_sd  = estimate  * sd_subscale,   # linear rescaling: z and p unchanged
+    low_sd  = conf.low  * sd_subscale,
+    high_sd = conf.high * sd_subscale,
+    EROS_label = factor(label, levels = rev(eros_spec$label))
+  )
+
+fair_main <- map_dbl(eros_models, \(m) fixef(m)[["fair_z"]])   # average participant's slope (~3.35)
+
+print(fig2_df |>
+        select(label, estimate, std.error, statistic, p.value, p_bonf,
+               est_sd, se_sd, low_sd, high_sd),
+      digits = 4)
+print(round(fair_main, 3))
+
+# ---- 4. Panel A: forest plot, per SD of each subscale ----
+eros_cols <- setNames(c("green3", "red2", "goldenrod2", "blue2"), eros_spec$label)
+
+x_lim <- max(abs(c(fig2_df$low_sd, fig2_df$high_sd))) * 1.1
+
+p_fig2a <- ggplot(fig2_df, aes(x = est_sd, y = EROS_label, color = EROS_label)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40", linewidth = 0.9) +
+  geom_pointrange(aes(xmin = low_sd, xmax = high_sd), linewidth = 1.6, size = 1.5) +
+  annotate("text", x = -0.03, y = 0.4, label = "← Fairness matters less",
+           hjust = 1, size = 5.5, color = "gray35") +
+  annotate("text", x =  0.03, y = 0.4, label = "Fairness matters more →",
+           hjust = 0, size = 5.5, color = "gray35") +
+  scale_x_continuous(limits = c(-x_lim, x_lim), breaks = seq(-1, 1, by = 0.5)) +
+  scale_y_discrete(expand = expansion(add = c(0.9, 0.5))) +
+  scale_color_manual(values = eros_cols, breaks = eros_spec$label, name = NULL) +
+  guides(color = guide_legend(nrow = 2, override.aes = list(linewidth = 1.6, size = 1.2))) +
+  labs(x = "Effect of a 1-SD higher EROS score\non fairness sensitivity (log-odds)", y = NULL) +
+  theme_minimal(base_size = 20) +
+  theme(panel.grid = element_blank(),
+        axis.text.y = element_blank(),
+        axis.line.x = element_line(color = "gray60"),
+        axis.ticks.x = element_line(color = "gray60"),
+        axis.ticks.length.x = unit(5, "pt"),
+        axis.text.x = element_text(size = 17),
+        axis.title = element_text(size = 18),
+        legend.position = "bottom",
+        legend.text = element_text(size = 16))
+
+# ---- 5. Panel B: predicted acceptance, other-directed emotion worsening ----
+# Typical participant (random effects = 0), at the four offer levels, for the
+# scale minimum, the mean, and +1 SD (-1 SD would fall below the scale minimum of 1).
+offers   <- c(0.05, 0.10, 0.25, 0.50)
+offers_z <- round((offers - fair_mean) / fair_sd, 4)
+
+eaw_center <- mean(full_df$avg_ext_wor, na.rm = TRUE)   # value used for centering
+eaw_sd     <- sub_sd$avg_ext_wor
+eaw_raw    <- c(1.00, eaw_center, eaw_center + eaw_sd)
+eaw_labs   <- sprintf(c("%.2f (scale minimum)", "%.2f (mean)", "%.2f (+1 SD)"), eaw_raw)
+
+pred_eaw <- ggpredict(
+  fair_extwor,
+  terms = c(sprintf("fair_z [%s]",    paste(offers_z, collapse = ",")),
+            sprintf("ext_wor_c [%s]", paste(round(eaw_raw - eaw_center, 4), collapse = ",")))
+) |>
+  as.data.frame() |>
+  mutate(offer = x * fair_sd + fair_mean,
+         eaw   = factor(as.numeric(as.character(group)), labels = eaw_labs))
+
+eaw_cols <- setNames(c("red2", "black", "red4"), eaw_labs)
+
+p_fig2b <- ggplot(pred_eaw, aes(x = offer, y = predicted, color = eaw, fill = eaw)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.12, color = NA) +
+  geom_line(linewidth = 1.6) +
+  geom_point(size = 4) +
+  scale_color_manual(values = eaw_cols) +
+  scale_fill_manual(values = eaw_cols) +
+  scale_x_continuous("Offer (% of endowment)", breaks = offers,
+                     labels = scales::label_percent(accuracy = 1)) +
+  scale_y_continuous("Predicted probability of accepting",
+                     limits = c(0, 1), labels = scales::label_percent(accuracy = 1)) +
+  labs(color = "Other-directed\nemotion worsening", fill = "Other-directed\nemotion worsening") +
+  theme_minimal(base_size = 20) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        axis.ticks.x = element_line(color = "gray60"),
+        axis.ticks.length.x = unit(5, "pt"),
+        legend.position = "inside",
+        legend.position.inside = c(0.74, 0.22),
+        legend.text = element_text(size = 16),
+        legend.title = element_text(size = 17),
+        axis.text = element_text(size = 17),
+        axis.title = element_text(size = 18))
+
+# ---- 6. Combine and save ----
+p_fig2 <- p_fig2a + p_fig2b + plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size = 24, face = "bold"))
+p_fig2
+
+ggsave("Figure2_EROS_fairness.pdf", p_fig2, width = 16, height = 8, device = cairo_pdf)   # for Illustrator
+ggsave("Figure2_EROS_fairness.png", p_fig2, width = 16, height = 8, dpi = 300, bg = "white")
+```
+```
+
+## Subject-specific fairness slopes
+```{r fig.height=8, fig.width=10}
+# Grand-mean center EROS subscales for models
+df$ext_wor_c <- scale(df$avg_ext_wor.x, scale = FALSE)[,1]
+df$ext_bet_c <- scale(df$avg_ext_bet.x, scale = FALSE)[,1]
+df$int_wor_c <- scale(df$avg_int_wor.x, scale = FALSE)[,1]
+df$int_bet_c <- scale(df$avg_int_bet.x, scale = FALSE)[,1]
+
+ext_wor_all <- summary(lm(slope_all ~ ext_wor_c + sub_age_MC + gender_female + gender_male, df))
+ext_wor_all
+ext_bet_all <- summary(lm(slope_all ~ ext_bet_c + sub_age_MC + gender_female + gender_male, df))
+ext_bet_all
+int_wor_all <- summary(lm(slope_all ~ int_wor_c + sub_age_MC + gender_female + gender_male, df))
+int_wor_all
+int_bet_all <- summary(lm(slope_all ~ int_bet_c + sub_age_MC + gender_female + gender_male, df))
+int_bet_all
+ext_wor_diff <- summary(lm(diff_slope ~ ext_wor_c + sub_age_MC + gender_female + gender_male, df))
+ext_wor_diff
+ext_bet_diff <- summary(lm(diff_slope ~ ext_bet_c + sub_age_MC + gender_female + gender_male, df))
+ext_bet_diff
+int_wor_diff <- summary(lm(diff_slope ~ int_wor_c + sub_age_MC + gender_female + gender_male, df))
+int_wor_diff
+int_bet_diff <- summary(lm(diff_slope ~ int_bet_c + sub_age_MC + gender_female + gender_male, df))
+int_bet_diff
+ext_wor_soc <- summary(lm(slope_social ~ ext_wor_c + sub_age_MC + gender_female + gender_male, df))
+ext_wor_soc
+ext_bet_soc <- summary(lm(slope_social ~ ext_bet_c + sub_age_MC + gender_female + gender_male, df))
+ext_bet_soc
+int_wor_soc <- summary(lm(slope_social ~ int_wor_c + sub_age_MC + gender_female + gender_male, df))
+int_wor_soc
+int_bet_soc <- summary(lm(slope_social ~ int_bet_c + sub_age_MC + gender_female + gender_male, df))
+int_bet_soc
+ext_wor_ns <- summary(lm(slope_nonsocial ~ ext_wor_c + sub_age_MC + gender_female + gender_male, df))
+ext_wor_ns
+ext_bet_ns <- summary(lm(slope_nonsocial ~ ext_bet_c + sub_age_MC + gender_female + gender_male, df))
+ext_bet_ns
+int_wor_ns <- summary(lm(slope_nonsocial ~ int_wor_c + sub_age_MC + gender_female + gender_male, df))
+int_wor_ns
+int_bet_ns <- summary(lm(slope_nonsocial ~ int_bet_c + sub_age_MC + gender_female + gender_male, df))
+int_bet_ns
+
+# Non GMC 
+ext_wor_all <- summary(lm(slope_all ~ avg_ext_wor.x + sub_age_MC + gender_female + gender_male, df))
+ext_wor_all
+ext_bet_all <- summary(lm(slope_all ~ avg_ext_bet.x + sub_age_MC + gender_female + gender_male, df))
+ext_bet_all
+int_wor_all <- summary(lm(slope_all ~ avg_int_wor.x + sub_age_MC + gender_female + gender_male, df))
+int_wor_all
+int_bet_all <- summary(lm(slope_all ~ avg_int_bet.x + sub_age_MC + gender_female + gender_male, df))
+int_bet_all
+
+ext_wor_diff <- summary(lm(diff_slope ~ avg_ext_wor.x + sub_age_MC + gender_female + gender_male, df))
+ext_wor_diff
+ext_bet_diff <- summary(lm(diff_slope ~ avg_ext_bet.x + sub_age_MC + gender_female + gender_male, df))
+ext_bet_diff
+int_wor_diff <- summary(lm(diff_slope ~ avg_int_wor.x + sub_age_MC + gender_female + gender_male, df))
+int_wor_diff
+int_bet_diff <- summary(lm(diff_slope ~ avg_int_bet.x + sub_age_MC + gender_female + gender_male, df))
+int_bet_diff
+
+ext_wor_soc <- summary(lm(slope_social ~ avg_ext_wor.x + sub_age_MC + gender_female + gender_male, df))
+ext_wor_soc
+ext_bet_soc <- summary(lm(slope_social ~ avg_ext_bet.x + sub_age_MC + gender_female + gender_male, df))
+ext_bet_soc
+int_wor_soc <- summary(lm(slope_social ~ avg_int_wor.x + sub_age_MC + gender_female + gender_male, df))
+int_wor_soc
+int_bet_soc <- summary(lm(slope_social ~ avg_int_bet.x + sub_age_MC + gender_female + gender_male, df))
+int_bet_soc
+
+ext_wor_ns <- summary(lm(slope_nonsocial ~ avg_ext_wor.x + sub_age_MC + gender_female + gender_male, df))
+ext_wor_ns
+ext_bet_ns <- summary(lm(slope_nonsocial ~ avg_ext_bet.x + sub_age_MC + gender_female + gender_male, df))
+ext_bet_ns
+int_wor_ns <- summary(lm(slope_nonsocial ~ avg_int_wor.x + sub_age_MC + gender_female + gender_male, df))
+int_wor_ns
+int_bet_ns <- summary(lm(slope_nonsocial ~ avg_int_bet.x + sub_age_MC + gender_female + gender_male, df))
+int_bet_ns
+
+
+# Difference between social and nonsocial context, extrinsic worsening trait in behavior (no difference in context)
+df_long_beh <- data.frame(slope = c(df$slope_social, df$slope_nonsocial),
+  eros  = c(df$avg_ext_wor.x, df$avg_ext_wor.x),
+  context = factor(rep(c("social", "nonsocial"), each = nrow(df))))
+
+model_contextdiff <- lm(slope ~ eros * context, df_long_beh)
+summary(model_contextdiff)
+
+vars <- c("avg_ext_bet.x", "avg_ext_wor.x","avg_int_bet.x", "avg_int_wor.x")
+
+for (v in vars) {
+  p <- ggplot(df, aes(x = slope_all, y = .data[[v]])) +
+    geom_point(alpha = 0.6) +
+    geom_smooth(method = "lm", se = TRUE) +
+    theme_minimal() +
+    labs(title = paste(v, "Behavioral Sensitivity to Fairness"),
+      x = "Sensitivity to Fairness",
+      y = v)
+    print(p)}
+
+df_long <- df |>
+  select(slope_all, avg_ext_bet.x, avg_ext_wor.x, avg_int_bet.x, avg_int_wor.x) |>
+  pivot_longer(-slope_all, names_to = "EROS_scale", values_to = "score")
+
+df_long$EROS_scale <- factor(df_long$EROS_scale,
+  levels = c("avg_ext_bet.x", "avg_ext_wor.x", "avg_int_bet.x", "avg_int_wor.x"),
+  labels = c("Other-Directed Emotion Improving", "Other-Directed Emotion Improving Worsening", "Self-Directed Emotion Improving", "Self-Directed Emotion Worsening"))
+
+# Supp. Figure 3: Subject-specific sensitivity to fairness x EROS
+p_supp_fairness_slope_eros <- ggplot(df_long, aes(x = slope_all, y = score)) +
+  geom_smooth(aes(color = EROS_scale, fill = EROS_scale),
+    method = "lm",
+    se = TRUE,
+    linewidth = 1.2,
+    alpha = 0.2) +
+  geom_point(size = 1, color = "black", alpha = 0.8) + 
+  facet_wrap(~ EROS_scale) +
+  scale_color_manual(values = c(
+    "Other-Directed Emotion Improving" = "green3",
+    "Extrinsic Worsening" = "red2",
+    "Intrinsic Improving" = "goldenrod2",
+    "Intrinsic Worsening" = "blue2")) +
+  scale_fill_manual(values = c(
+    "Other-Directed Emotion Improving" = "green3",
+    "Extrinsic Worsening" = "red2",
+    "Intrinsic Improving" = "goldenrod2",
+    "Intrinsic Worsening" = "blue2")) +
+  guides(color = "none", fill = "none") +
+  labs(
+    x = "Sensitivity to Fairness",
+    y = "EROS Subscale Score") +
+  theme_minimal(base_size = 16)
+
+p_supp_fairness_slope_eros
+
+```
+```{r}
+# Subject-level models: does each EROS tendency predict fairness sensitivity?
+# Covariates match the neural models.
+covars <- "+ sub_age_MC + gender_female + gender_male"
+
+primary <- map2_dfr(eros_vars, eros_labs, \(v, lab) {
+  m <- lm(as.formula(paste("slope_all ~", v, covars)), data = df)
+  broom::tidy(m, conf.int = TRUE) |>
+    filter(term == v) |>
+    mutate(EROS_scale = lab, outcome = "slope_all")
+}) |>
+  mutate(p_bonf = p.adjust(p.value, "bonferroni"),
+         p_bh   = p.adjust(p.value, "BH"))
+
+print(primary)
+
+secondary <- expand_grid(outcome = c("slope_social", "slope_nonsocial", "diff_slope"),
+                         v = eros_vars) |>
+  mutate(lab = eros_labs[match(v, eros_vars)]) |>
+  pmap_dfr(\(outcome, v, lab) {
+    m <- lm(as.formula(paste(outcome, "~", v, covars)), data = df)
+    broom::tidy(m, conf.int = TRUE) |>
+      filter(term == v) |>
+      mutate(EROS_scale = lab, outcome = outcome)
+  })
+
+secondary |> arrange(outcome, EROS_scale)
+print(secondary)
+
+m <- glmer(accept ~ beh_fairness_num * avg_ext_wor + (1 + beh_fairness_num | sub_id), family = binomial, data = full_df, 
+           control =glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5)))
+summary(m)$coefficients
+
+trial_level <- map2_dfr(c("avg_ext_bet", "avg_ext_wor", "avg_int_bet", "avg_int_wor"),
+                        eros_labs, \(v, lab) {
+  m <- glmer(as.formula(paste("accept ~ beh_fairness_num *", v,
+                              "+ (1 + beh_fairness_num | sub_id)")),
+             family = binomial, data = full_df,
+             control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5)))
+  broom.mixed::tidy(m, effects = "fixed", conf.int = TRUE) |>
+    filter(str_detect(term, "beh_fairness_num:")) |>
+    mutate(EROS_scale = lab)
+}) |>
+  mutate(p_bonf = p.adjust(p.value, "bonferroni"),
+         p_bh   = p.adjust(p.value, "BH"))
+
+print(trial_level)
+```
+
+
+```{r}
+# Export selected plots ---------------------------------------------------
+
+out_dir <- "/Users/tur61139/Documents/GitHub/rf1-kos/figures"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Scatter plots
+ggsave(file.path(out_dir, "figure3_dlPFC_extbet_scatter.png"),
+  plot = p_dlPFC_extbet,
+  width = 180, height = 145, units = "mm", dpi = 300)
+
+ggsave(file.path(out_dir, "figure6_amygdala_extwor_scatter.png"),
+  plot = p_amygdala_extwor,
+  width = 180, height = 145, units = "mm", dpi = 300)
+
+# Supplement figures
+ggsave(file.path(out_dir, "supplement_figure1_fairness.png"),
+  plot = p_supp_fairness,
+  width = 180, height = 145, units = "mm", dpi = 300)
+
+ggsave(file.path(out_dir, "supplement_figure2_EROS_coefficients.png"),
+  plot = p_supp_eros_coefficients,
+  width = 180, height = 145, units = "mm", dpi = 300)
+
+ggsave(file.path(out_dir, "supplement_figure3_fairness_slope_EROS.png"),
+  plot = p_supp_fairness_slope_eros,
+  width = 180, height = 145, units = "mm", dpi = 300)
+
+```
